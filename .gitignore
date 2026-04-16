@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+
+# Persönliches Portfolio (nicht ins Repo pushen)
+data/my_portfolio.csv
+
+# v2: SQLite Cache
+data/cache.db
+
+# v3: Telegram Token und Alert-Config mit echten Daten
+config/alerts.local.yaml
