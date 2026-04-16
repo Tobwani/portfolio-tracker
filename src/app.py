@@ -92,7 +92,7 @@ def build_performance(
             "Wert ($)": value,
             "G/V ($)": pl,
             "G/V (%)": pl_pct,
-            "Heute ($)": daily[0] if daily else None,
+            "Heute ($)": round(daily[0] * quantity, 2) if daily else None,
             "Heute (%)": daily[1] if daily else None,
             "Tage": d_held,
             "Ann. Rendite (%)": ann,
