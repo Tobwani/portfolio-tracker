@@ -17,7 +17,6 @@ from data_fetcher import (
     PERIOD_MAP,
     get_current_price,
     get_daily_change,
-    get_exchange_rate,
     get_price_history,
     get_ticker_info,
     load_portfolio,
@@ -60,18 +59,6 @@ def period_return_from_history(hist: pd.DataFrame, days_back: int) -> float | No
     return round(((curr_price - ref_price) / ref_price) * 100, 2)
 
 
-def fmt_money(value: float, sym: str) -> str:
-    if sym == "€":
-        return f"{value:,.2f} €"
-    return f"${value:,.2f}"
-
-
-# ── Cached exchange rate ──────────────────────────────────────────────────────
-@st.cache_data(ttl=300)
-def cached_rate(from_ccy: str, to_ccy: str) -> float:
-    return get_exchange_rate(from_ccy, to_ccy)
-
-
 # ── Cached data builders ──────────────────────────────────────────────────────
 @st.cache_data(ttl=60, show_spinner="Kurse werden geladen …")
 def build_performance(
@@ -79,33 +66,20 @@ def build_performance(
     purchases: tuple,
     quantities: tuple,
     purchase_dates: tuple,
-    base_currency: str,
 ) -> pd.DataFrame:
-    sym = "€" if base_currency == "EUR" else "$"
     rows = []
 
     for ticker, purchase_price, quantity, pdate in zip(
         tickers, purchases, quantities, purchase_dates
     ):
-        price_raw, ticker_ccy = get_current_price(ticker)
-        if price_raw is None:
+        price = get_current_price(ticker)
+        if price is None:
             continue
 
-        # Convert current price to base currency
-        rate = cached_rate(ticker_ccy or "USD", base_currency)
-        price = round(price_raw * rate, 2)
-
-        # Daily change: convert per-unit amount to base currency, then × quantity
         daily = get_daily_change(ticker)
-        if daily:
-            daily_chg_raw, daily_chg_pct, daily_ccy = daily
-            daily_rate = cached_rate(daily_ccy or "USD", base_currency)
-            daily_chg = round(daily_chg_raw * daily_rate * quantity, 2)
-        else:
-            daily_chg = None
-            daily_chg_pct = None
+        daily_chg = round(daily[0] * quantity, 2) if daily else None
+        daily_chg_pct = daily[1] if daily else None
 
-        # purchase_price is already in base_currency (what the user paid)
         pl = round((price - purchase_price) * quantity, 2)
         pl_pct = round(((price - purchase_price) / purchase_price) * 100, 2)
         value = round(price * quantity, 2)
@@ -115,19 +89,18 @@ def build_performance(
 
         rows.append({
             "Ticker": ticker,
-            f"Kaufkurs ({sym})": purchase_price,
-            f"Aktuell ({sym})": price,
+            "Kaufkurs": purchase_price,
+            "Aktuell": price,
             "Stück": quantity,
-            f"Invest ({sym})": cost,
-            f"Wert ({sym})": value,
-            f"G/V ({sym})": pl,
+            "Invest": cost,
+            "Wert": value,
+            "G/V": pl,
             "G/V (%)": pl_pct,
-            f"Heute ({sym})": daily_chg,
+            "Heute": daily_chg,
             "Heute (%)": daily_chg_pct,
             "Tage": d_held,
             "Ann. Rendite (%)": ann,
             "_purchase_date": pdate,
-            "_ticker_ccy": ticker_ccy or "USD",
         })
 
     return pd.DataFrame(rows)
@@ -139,28 +112,21 @@ def build_history(
     purchases: tuple,
     quantities: tuple,
     purchase_dates: tuple,
-    ticker_currencies: tuple,
     period_key: str,
-    base_currency: str,
 ) -> pd.DataFrame:
     combined: dict[str, pd.Series] = {}
 
-    for ticker, purchase_price, quantity, pdate, ticker_ccy in zip(
-        tickers, purchases, quantities, purchase_dates, ticker_currencies
+    for ticker, purchase_price, quantity, pdate in zip(
+        tickers, purchases, quantities, purchase_dates,
     ):
         hist = get_price_history(ticker, period_key)
         if hist.empty:
             continue
-
-        # Apply currency conversion to the history
-        rate = cached_rate(ticker_ccy or "USD", base_currency)
-
-        series = (hist.set_index("Date")["Close"] * rate)
+        series = hist.set_index("Date")["Close"]
         if pdate:
             series = series[series.index >= pd.to_datetime(pdate)]
         if series.empty:
             continue
-
         combined[ticker] = series * quantity
 
     if not combined:
@@ -194,20 +160,12 @@ with st.sidebar:
         df_raw = load_portfolio(csv_path)
         st.caption("Nutzt `data/example_portfolio.csv`")
 
-    base_currency = st.selectbox(
-        "Basiswährung",
-        ["EUR", "USD"],
-        index=0,
-        help="Alle Werte werden in dieser Währung angezeigt. US-Aktien (AAPL, MSFT usw.) werden automatisch umgerechnet.",
-    )
-    ccy_sym = "€" if base_currency == "EUR" else "$"
-
     cash = st.number_input(
-        f"Barvermögen ({ccy_sym})",
+        "Barvermögen",
         min_value=0.0,
         value=0.0,
         step=100.0,
-        help=f"Dein uninvestiertes Guthaben in {base_currency}. Wird zum Gesamtwert addiert.",
+        help="Dein uninvestiertes Guthaben. Wird zum Gesamtwert addiert.",
     )
 
     st.divider()
@@ -219,7 +177,7 @@ with st.sidebar:
         "Auto-Refresh",
         list(REFRESH_OPTIONS.keys()),
         index=2,
-        help="Wie oft sollen die Kurse automatisch aktualisiert werden? Yahoo Finance hat Rate-Limits — unter 1 Min nicht empfohlen.",
+        help="Wie oft sollen die Kurse automatisch aktualisiert werden?",
     )
     if REFRESH_OPTIONS[refresh_label] > 0:
         st_autorefresh(interval=REFRESH_OPTIONS[refresh_label] * 1000, key="portfolio_autorefresh")
@@ -229,9 +187,10 @@ with st.sidebar:
     with st.expander("📖 Ticker-Hilfe (Trade Republic)"):
         st.markdown("""
 **Faustregel:**
-- `.DE` Suffix → XETRA, Preis in EUR
-- Kein Suffix → US-Börse, Preis in USD (wird automatisch umgerechnet)
-- Krypto: `-EUR` statt `-USD` verwenden
+- Kein Suffix → US-Börse (z.B. `AAPL`, `NVDA`)
+- `.DE` Suffix → XETRA Frankfurt (z.B. `SAP.DE`)
+- `.AS` Suffix → Amsterdam/Euronext (z.B. `ASML.AS`)
+- Krypto: `-EUR` empfohlen (z.B. `BTC-EUR`)
 
 | Instrument | Ticker |
 |---|---|
@@ -240,12 +199,10 @@ with st.sidebar:
 | NVIDIA | `NVDA` |
 | SAP | `SAP.DE` |
 | Siemens | `SIE.DE` |
-| BMW | `BMW.DE` |
-| Allianz | `ALV.DE` |
+| ASML | `ASML.AS` |
 | MSCI World ETF | `EUNL.DE` |
 | Bitcoin | `BTC-EUR` |
 | Ethereum | `ETH-EUR` |
-| Solana | `SOL-EUR` |
         """)
 
     st.caption("Daten: Yahoo Finance · Lokal gecacht")
@@ -260,27 +217,8 @@ purchase_dates_t = (
     tuple(df_raw["purchase_date"]) if has_dates else tuple(None for _ in tickers_t)
 )
 
-perf_df = build_performance(tickers_t, purchases_t, quantities_t, purchase_dates_t, base_currency)
-
-# Extract currencies from performance df for history (fallback to USD)
-ticker_currencies_t = tuple(
-    perf_df.set_index("Ticker")["_ticker_ccy"].to_dict().get(t, "USD")
-    if not perf_df.empty else "USD"
-    for t in tickers_t
-)
-
-hist_df = build_history(
-    tickers_t, purchases_t, quantities_t, purchase_dates_t,
-    ticker_currencies_t, period_key, base_currency,
-)
-
-# Dynamic column names based on currency symbol
-wert_col = f"Wert ({ccy_sym})"
-invest_col = f"Invest ({ccy_sym})"
-pl_col = f"G/V ({ccy_sym})"
-heute_col = f"Heute ({ccy_sym})"
-kauf_col = f"Kaufkurs ({ccy_sym})"
-akt_col = f"Aktuell ({ccy_sym})"
+perf_df = build_performance(tickers_t, purchases_t, quantities_t, purchase_dates_t)
+hist_df = build_history(tickers_t, purchases_t, quantities_t, purchase_dates_t, period_key)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -300,44 +238,37 @@ def show_detail_page(ticker: str) -> None:
     info = cached_ticker_info(ticker)
     name = info.get("name", ticker)
     sector = info.get("sector", "—")
+    currency = info.get("currency", "")
     w52h = info.get("week52_high")
     w52l = info.get("week52_low")
-    ticker_ccy = r.get("_ticker_ccy", "USD")
-
-    # Convert 52W values to base currency
-    w52_rate = cached_rate(ticker_ccy, base_currency)
-    if w52h:
-        w52h = round(w52h * w52_rate, 2)
-    if w52l:
-        w52l = round(w52l * w52_rate, 2)
 
     st.title(f"{name}  ·  {ticker}")
-    st.caption(f"Sektor: {sector} · Originalwährung: {ticker_ccy}")
+    st.caption(f"Sektor: {sector}" + (f" · Währung: {currency}" if currency else ""))
     st.divider()
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric(
-        f"Aktueller Kurs ({ccy_sym})",
-        fmt_money(r[akt_col], ccy_sym),
-        help="Letzter gehandelter Preis, umgerechnet in deine Basiswährung.",
+        "Aktueller Kurs",
+        f"{r['Aktuell']:,.2f}",
+        help="Letzter gehandelter Preis (Yahoo Finance).",
     )
     c2.metric(
-        f"Positionswert ({ccy_sym})",
-        fmt_money(r[wert_col], ccy_sym),
+        "Positionswert",
+        f"{r['Wert']:,.2f}",
         help="Aktueller Kurs × Anzahl deiner Anteile.",
     )
     c3.metric(
         "Gesamt G/V",
-        fmt_money(r[pl_col], ccy_sym),
+        f"{r['G/V']:+,.2f}",
         delta=f"{r['G/V (%)']:+.2f}%",
         delta_color="normal",
-        help="(Aktueller Kurs − Kaufkurs) × Stück. Zeigt ob du insgesamt im Plus oder Minus bist.",
+        help="(Aktueller Kurs − Kaufkurs) × Stück.",
     )
-    if r[heute_col] is not None:
+    if r["Heute"] is not None:
         c4.metric(
             "Tagesänderung",
             f"{r['Heute (%)']:+.2f}%",
-            delta=fmt_money(r[heute_col], ccy_sym),
+            delta=f"{r['Heute']:+,.2f}",
             delta_color="normal",
             help="Veränderung deiner Position seit dem gestrigen Börsenschluss (Kursänderung × Stück).",
         )
@@ -364,11 +295,10 @@ def show_detail_page(ticker: str) -> None:
         if pdate:
             series = series[series["Date"] >= pd.to_datetime(pdate)]
 
-        rate_hist = cached_rate(ticker_ccy, base_currency)
         qty = float(r["Stück"])
-        cost_total = float(r[invest_col])
-        position_values = series["Close"] * rate_hist * qty
-        is_up = float(r[wert_col]) >= cost_total
+        cost_total = float(r["Invest"])
+        position_values = series["Close"] * qty
+        is_up = float(r["Wert"]) >= cost_total
         lc = "#00d4aa" if is_up else "#ff4b4b"
 
         buy_x = buy_y = None
@@ -376,14 +306,14 @@ def show_detail_page(ticker: str) -> None:
             buy_dt = pd.to_datetime(pdate)
             idx = (series["Date"] - buy_dt).abs().idxmin()
             buy_x = series.loc[idx, "Date"]
-            buy_y = series.loc[idx, "Close"] * rate_hist * qty
+            buy_y = series.loc[idx, "Close"] * qty
 
         fig = go.Figure()
         fig.add_hline(
             y=cost_total,
             line_dash="dot",
             line_color="rgba(255,255,255,0.3)",
-            annotation_text=f"Einstieg {fmt_money(cost_total, ccy_sym)}",
+            annotation_text=f"Einstieg {cost_total:,.2f}",
             annotation_position="bottom right",
         )
         fig.add_trace(go.Scatter(
@@ -394,7 +324,7 @@ def show_detail_page(ticker: str) -> None:
             line={"color": lc, "width": 2},
             fill="tozeroy",
             fillcolor="rgba(0,212,170,0.08)" if is_up else "rgba(255,75,75,0.08)",
-            hovertemplate=f"<b>%{{x|%d.%m.%Y}}</b><br>{fmt_money(0, ccy_sym).replace('0.00', '%{y:,.2f}')}<extra></extra>",
+            hovertemplate="<b>%{x|%d.%m.%Y}</b><br>%{y:,.2f}<extra></extra>",
         ))
         if buy_x is not None:
             fig.add_trace(go.Scatter(
@@ -403,28 +333,26 @@ def show_detail_page(ticker: str) -> None:
                 marker={"color": "#ffffff", "size": 10, "line": {"color": lc, "width": 2}},
                 text=["Kauf"], textposition="top center",
                 textfont={"color": "#ffffff", "size": 11},
-                hovertemplate=f"<b>Kaufdatum</b><br>{buy_x.strftime('%d.%m.%Y')}<br>{fmt_money(buy_y, ccy_sym)}<extra></extra>",
+                hovertemplate=f"<b>Kaufdatum</b><br>{buy_x.strftime('%d.%m.%Y')}<br>{buy_y:,.2f}<extra></extra>",
                 showlegend=False,
             ))
         fig.update_layout(
             margin={"t": 10, "b": 10, "l": 0, "r": 0}, height=340,
             showlegend=False,
             xaxis={"showgrid": False},
-            yaxis={"showgrid": True, "gridcolor": "#2a2a2a",
-                   "tickprefix": "" if ccy_sym == "€" else "$",
-                   "ticksuffix": " €" if ccy_sym == "€" else ""},
+            yaxis={"showgrid": True, "gridcolor": "#2a2a2a"},
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             hovermode="x unified",
         )
         st.plotly_chart(fig, use_container_width=True)
 
     if w52h and w52l:
-        st.subheader(f"52-Wochen-Spanne ({ccy_sym})")
-        curr_converted = float(r[akt_col])
+        st.subheader("52-Wochen-Spanne")
+        curr = float(r["Aktuell"])
         fig_range = go.Figure(go.Indicator(
             mode="gauge+number",
-            value=curr_converted,
-            number={"valueformat": ",.2f", "suffix": " €" if ccy_sym == "€" else ""},
+            value=curr,
+            number={"valueformat": ",.2f"},
             gauge={
                 "axis": {"range": [w52l, w52h]},
                 "bar": {"color": "#00d4aa"},
@@ -437,9 +365,9 @@ def show_detail_page(ticker: str) -> None:
             paper_bgcolor="rgba(0,0,0,0)",
         )
         col_l, col_g, col_r = st.columns([1, 3, 1])
-        col_l.metric("52W Tief", fmt_money(w52l, ccy_sym))
+        col_l.metric("52W Tief", f"{w52l:,.2f}")
         col_g.plotly_chart(fig_range, use_container_width=True)
-        col_r.metric("52W Hoch", fmt_money(w52h, ccy_sym))
+        col_r.metric("52W Hoch", f"{w52h:,.2f}")
 
     if not max_hist.empty:
         st.subheader("Rendite nach Zeitraum")
@@ -455,11 +383,11 @@ def show_detail_page(ticker: str) -> None:
 
     st.divider()
     detail_data = {
-        f"Kaufkurs": fmt_money(r[kauf_col], ccy_sym),
+        "Kaufkurs": f"{r['Kaufkurs']:,.2f}",
         "Stück": r["Stück"],
-        "Investiert": fmt_money(r[invest_col], ccy_sym),
-        "Aktueller Wert": fmt_money(r[wert_col], ccy_sym),
-        "Gewinn/Verlust": f"{fmt_money(r[pl_col], ccy_sym)} ({r['G/V (%)']:+.2f}%)",
+        "Investiert": f"{r['Invest']:,.2f}",
+        "Aktueller Wert": f"{r['Wert']:,.2f}",
+        "Gewinn/Verlust": f"{r['G/V']:+,.2f} ({r['G/V (%)']:+.2f}%)",
     }
     if r["_purchase_date"]:
         detail_data["Kaufdatum"] = r["_purchase_date"]
@@ -475,38 +403,36 @@ def show_detail_page(ticker: str) -> None:
 def show_main_page() -> None:
     st.title("📈 Portfolio Tracker")
 
-    total_positions = perf_df[wert_col].sum() if not perf_df.empty else 0.0
+    total_positions = perf_df["Wert"].sum() if not perf_df.empty else 0.0
     total_value = round(total_positions + cash, 2)
-    total_invest = perf_df[invest_col].sum() if not perf_df.empty else 0.0
-    total_pl = perf_df[pl_col].sum() if not perf_df.empty else 0.0
+    total_invest = perf_df["Invest"].sum() if not perf_df.empty else 0.0
+    total_pl = perf_df["G/V"].sum() if not perf_df.empty else 0.0
     total_pl_pct = round((total_pl / total_invest) * 100, 2) if total_invest else 0.0
-    today_pl = (
-        perf_df[heute_col].dropna().sum() if heute_col in perf_df.columns else None
-    )
+    today_pl = perf_df["Heute"].dropna().sum() if "Heute" in perf_df.columns else None
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(
-        f"Gesamtwert ({ccy_sym})",
-        fmt_money(total_value, ccy_sym),
-        help=f"Aktueller Wert aller Positionen + Barvermögen, in {base_currency}.",
+        "Gesamtwert",
+        f"{total_value:,.2f}",
+        help="Aktueller Wert aller Positionen + Barvermögen.",
     )
     c2.metric(
         "Gesamt G/V",
-        fmt_money(total_pl, ccy_sym),
+        f"{total_pl:+,.2f}",
         delta=f"{total_pl_pct:+.2f}%",
         delta_color="normal",
         help="Gesamter Gewinn oder Verlust über alle Positionen seit deinem Einstieg.",
     )
     c3.metric(
         "Investiert",
-        fmt_money(total_invest, ccy_sym),
+        f"{total_invest:,.2f}",
         help="Summe aller Kaufpreise (dein gesamter Kapitaleinsatz).",
     )
     if today_pl is not None:
         today_pct = round((today_pl / total_invest) * 100, 2) if total_invest else 0
         c4.metric(
             "Tagesänderung",
-            fmt_money(today_pl, ccy_sym),
+            f"{today_pl:+,.2f}",
             delta=f"{today_pct:+.2f}%",
             delta_color="normal",
             help="Wie viel dein Portfolio heute im Vergleich zum gestrigen Börsenschluss gewonnen oder verloren hat (Kursänderung × Stück).",
@@ -535,9 +461,7 @@ def show_main_page() -> None:
                 margin={"t": 10, "b": 10, "l": 0, "r": 0}, height=300,
                 showlegend=False,
                 xaxis={"showgrid": False},
-                yaxis={"showgrid": True, "gridcolor": "#2a2a2a",
-                       "ticksuffix": " €" if ccy_sym == "€" else "",
-                       "tickprefix": "" if ccy_sym == "€" else "$"},
+                yaxis={"showgrid": True, "gridcolor": "#2a2a2a"},
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                 hovermode="x unified",
             )
@@ -548,8 +472,7 @@ def show_main_page() -> None:
     with right:
         st.subheader("Allocation")
         if not perf_df.empty:
-            alloc_df = perf_df[["Ticker", wert_col]].copy()
-            alloc_df.columns = ["Ticker", "Wert"]
+            alloc_df = perf_df[["Ticker", "Wert"]].copy()
             if cash > 0:
                 alloc_df = pd.concat(
                     [alloc_df, pd.DataFrame([{"Ticker": "Cash", "Wert": cash}])],
@@ -561,7 +484,7 @@ def show_main_page() -> None:
             )
             fig_pie.update_traces(
                 textposition="outside", textinfo="percent+label",
-                hovertemplate="<b>%{label}</b><br>%{value:,.2f}<extra></extra>",
+                hovertemplate="<b>%{label}</b><br>%{value:,.2f} (%{percent})<extra></extra>",
             )
             fig_pie.update_layout(
                 margin={"t": 10, "b": 10, "l": 0, "r": 0}, height=300,
@@ -579,7 +502,7 @@ def show_main_page() -> None:
         for i, (_, r) in enumerate(perf_df.iterrows()):
             ticker = r["Ticker"]
             with cols[i % n_cols]:
-                pl_color = "#00c853" if r[pl_col] >= 0 else "#ff1744"
+                pl_color = "#00c853" if r["G/V"] >= 0 else "#ff1744"
                 today_str = ""
                 if r["Heute (%)"] is not None:
                     arrow = "▲" if r["Heute (%)"] >= 0 else "▼"
@@ -588,10 +511,10 @@ def show_main_page() -> None:
                     f"""
                     <div style="border:1px solid #2a2a3a;border-radius:8px;padding:14px;margin-bottom:8px;">
                         <div style="font-size:1.1rem;font-weight:700;">{ticker}</div>
-                        <div style="font-size:1.4rem;font-weight:700;">{fmt_money(r[akt_col], ccy_sym)}</div>
-                        <div style="color:{pl_color};font-weight:600;">{fmt_money(r[pl_col], ccy_sym)} &nbsp; {r['G/V (%)']:+.2f}%</div>
+                        <div style="font-size:1.4rem;font-weight:700;">{r['Aktuell']:,.2f}</div>
+                        <div style="color:{pl_color};font-weight:600;">{r['G/V']:+,.2f} &nbsp; {r['G/V (%)']:+.2f}%</div>
                         <div style="color:#888;font-size:0.85rem;">{today_str}</div>
-                        <div style="color:#aaa;font-size:0.85rem;">Wert: {fmt_money(r[wert_col], ccy_sym)}</div>
+                        <div style="color:#aaa;font-size:0.85rem;">Wert: {r['Wert']:,.2f}</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -604,7 +527,7 @@ def show_main_page() -> None:
 
     st.subheader("Investiert vs. aktueller Wert")
     if not perf_df.empty:
-        bar_data = perf_df[["Ticker", invest_col, wert_col]].copy()
+        bar_data = perf_df[["Ticker", "Invest", "Wert"]].copy()
         bar_data.columns = ["Ticker", "Investiert", "Aktuell"]
         bar_data = bar_data.melt(id_vars="Ticker", var_name="Art", value_name="Betrag")
         fig_bar = px.bar(
@@ -615,7 +538,7 @@ def show_main_page() -> None:
             margin={"t": 10, "b": 10, "l": 0, "r": 0}, height=250,
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             legend={"title": ""},
-            yaxis={"ticksuffix": " €" if ccy_sym == "€" else "", "gridcolor": "#2a2a2a"},
+            yaxis={"gridcolor": "#2a2a2a"},
             xaxis={"showgrid": False},
         )
         st.plotly_chart(fig_bar, use_container_width=True)
@@ -624,27 +547,28 @@ def show_main_page() -> None:
 
     st.subheader("Übersicht aller Positionen")
     if not perf_df.empty:
-        display_cols = ["Ticker", kauf_col, akt_col, "Stück", invest_col, wert_col, pl_col, "G/V (%)"]
-        if heute_col in perf_df.columns:
-            display_cols += [heute_col, "Heute (%)"]
+        display_cols = ["Ticker", "Kaufkurs", "Aktuell", "Stück", "Invest", "Wert", "G/V", "G/V (%)"]
+        if "Heute" in perf_df.columns:
+            display_cols += ["Heute", "Heute (%)"]
         if "Tage" in perf_df.columns:
             display_cols.append("Tage")
         if "Ann. Rendite (%)" in perf_df.columns:
             display_cols.append("Ann. Rendite (%)")
 
         disp = perf_df[display_cols].copy()
-        green_red = [pl_col, "G/V (%)"]
-        if heute_col in disp.columns:
-            green_red += [heute_col, "Heute (%)"]
+        green_red = ["G/V", "G/V (%)"]
+        if "Heute" in disp.columns:
+            green_red += ["Heute", "Heute (%)"]
         if "Ann. Rendite (%)" in disp.columns:
             green_red.append("Ann. Rendite (%)")
 
-        money_fmt = "{:,.2f} €" if ccy_sym == "€" else "${:,.2f}"
-        fmt = {c: money_fmt for c in [kauf_col, akt_col, invest_col, wert_col]}
-        fmt[pl_col] = ("{:+,.2f} €" if ccy_sym == "€" else "${:+,.2f}")
-        fmt["G/V (%)"] = "{:+.2f}%"
-        if heute_col in disp.columns:
-            fmt[heute_col] = ("{:+,.2f} €" if ccy_sym == "€" else "${:+,.2f}")
+        fmt = {
+            "Kaufkurs": "{:,.2f}", "Aktuell": "{:,.2f}",
+            "Invest": "{:,.2f}", "Wert": "{:,.2f}",
+            "G/V": "{:+,.2f}", "G/V (%)": "{:+.2f}%",
+        }
+        if "Heute" in disp.columns:
+            fmt["Heute"] = "{:+,.2f}"
             fmt["Heute (%)"] = "{:+.2f}%"
         if "Ann. Rendite (%)" in disp.columns:
             fmt["Ann. Rendite (%)"] = "{:+.2f}%"

@@ -2,11 +2,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from data_fetcher import get_current_price, get_exchange_rate, load_portfolio
+from data_fetcher import get_current_price, load_portfolio
 
 DATA_DIR = Path(__file__).parent.parent / "data"
-BASE_CURRENCY = "EUR"
-CCY_SYM = "€"
 
 
 def round_float(number: float) -> float:
@@ -17,13 +15,10 @@ def calculate_performance(df: pd.DataFrame) -> dict:
     performance = {}
 
     for idx, ticker in enumerate(df["ticker"]):
-        price_raw, ticker_ccy = get_current_price(ticker)
-        if price_raw is None:
+        current_price = get_current_price(ticker)
+        if current_price is None:
             print(f"Warnung: Preis für '{ticker}' konnte nicht abgerufen werden.")
             continue
-
-        rate = get_exchange_rate(ticker_ccy or "USD", BASE_CURRENCY)
-        current_price = round_float(price_raw * rate)
 
         purchase_price = round_float(df["purchase_price"].iloc[idx])
         quantity = df["quantity"].iloc[idx]
@@ -47,9 +42,9 @@ def calculate_performance(df: pd.DataFrame) -> dict:
 
 
 def show_results(performance: dict) -> None:
-    print("=" * 44)
-    print(f"  Portfolio Übersicht  ({BASE_CURRENCY})")
-    print("=" * 44)
+    print("=" * 40)
+    print("  Portfolio Übersicht")
+    print("=" * 40)
 
     total_value = 0.0
     total_pl = 0.0
@@ -57,19 +52,19 @@ def show_results(performance: dict) -> None:
     for ticker, info in performance.items():
         sign = "+" if info["profit_loss"] >= 0 else ""
         print(f"\n{ticker}")
-        print(f"  Aktueller Kurs:  {info['current_price']:,.2f} {CCY_SYM}")
-        print(f"  Kaufkurs:        {info['purchase_price']:,.2f} {CCY_SYM}")
+        print(f"  Aktueller Kurs:  {info['current_price']:,.2f}")
+        print(f"  Kaufkurs:        {info['purchase_price']:,.2f}")
         print(f"  Stück:           {info['quantity']}")
-        print(f"  Positionswert:   {info['current_value']:,.2f} {CCY_SYM}")
-        print(f"  Gewinn/Verlust:  {sign}{info['profit_loss']:,.2f} {CCY_SYM} ({sign}{info['profit_loss_percent']:.2f}%)")
+        print(f"  Positionswert:   {info['current_value']:,.2f}")
+        print(f"  Gewinn/Verlust:  {sign}{info['profit_loss']:,.2f} ({sign}{info['profit_loss_percent']:.2f}%)")
         total_value += info["current_value"]
         total_pl += info["profit_loss"]
 
-    print("\n" + "=" * 44)
+    print("\n" + "=" * 40)
     sign = "+" if total_pl >= 0 else ""
-    print(f"  Gesamtwert:      {round_float(total_value):,.2f} {CCY_SYM}")
-    print(f"  Gesamt G/V:      {sign}{round_float(total_pl):,.2f} {CCY_SYM}")
-    print("=" * 44)
+    print(f"  Gesamtwert:      {round_float(total_value):,.2f}")
+    print(f"  Gesamt G/V:      {sign}{round_float(total_pl):,.2f}")
+    print("=" * 40)
 
 
 if __name__ == "__main__":
