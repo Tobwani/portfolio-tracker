@@ -29,7 +29,6 @@ def _get_conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
 
-    # Check if schema is current; if not, drop and recreate (dev-only migration)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(price_cache)").fetchall()}
     if cols and "hist_date" not in cols:
         conn.execute("DROP TABLE price_cache")
@@ -48,33 +47,61 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
-def get_current_price(ticker: str) -> float | None:
+def get_exchange_rate(from_ccy: str, to_ccy: str) -> float:
+    """Return the exchange rate from_ccy → to_ccy (e.g. USD → EUR = ~0.92).
+
+    Uses Yahoo Finance pairs like USDEUR=X. Returns 1.0 on error or same currency.
+    """
+    if from_ccy == to_ccy:
+        return 1.0
     try:
-        price = yf.Ticker(ticker).fast_info["last_price"]
+        ticker = f"{from_ccy}{to_ccy}=X"
+        rate = yf.Ticker(ticker).fast_info["last_price"]
+        if rate:
+            return float(rate)
+    except Exception:
+        pass
+    return 1.0
+
+
+def get_current_price(ticker: str) -> tuple[float, str] | tuple[None, None]:
+    """Return (price, currency) for the given ticker, e.g. (263.61, 'USD') for AAPL.
+
+    Returns (None, None) on error.
+    """
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        price = fi["last_price"]
+        currency = fi.get("currency") or "USD"
         if price is None:
             raise ValueError("no price")
-        return round(float(price), 2)
+        return round(float(price), 2), str(currency)
     except Exception:
-        return None
+        return None, None
 
 
-def get_daily_change(ticker: str) -> tuple[float, float] | None:
-    """Return (change_$, change_%) for today. None on error."""
+def get_daily_change(ticker: str) -> tuple[float, float, str] | None:
+    """Return (raw_price_change, change_pct, currency) for today.
+
+    raw_price_change is the per-unit price delta — multiply by quantity in the caller.
+    Returns None on error.
+    """
     try:
         fi = yf.Ticker(ticker).fast_info
         prev = fi["previous_close"]
         curr = fi["last_price"]
+        currency = fi.get("currency") or "USD"
         if prev and curr:
-            chg = round(curr - prev, 2)
+            chg = round(curr - prev, 4)
             chg_pct = round((chg / prev) * 100, 2)
-            return chg, chg_pct
+            return chg, chg_pct, str(currency)
     except Exception:
         pass
     return None
 
 
 def get_ticker_info(ticker: str) -> dict:
-    """Return static info: name, sector, 52W high/low."""
+    """Return static info: name, sector, 52W high/low, currency."""
     result: dict = {}
     try:
         info = yf.Ticker(ticker).info
@@ -89,10 +116,10 @@ def get_ticker_info(ticker: str) -> dict:
 
 
 def get_price_history(ticker: str, period_key: str) -> pd.DataFrame:
-    """Return DataFrame with columns [Date, Close] for the given period.
+    """Return DataFrame with columns [Date, Close] in the ticker's native currency.
 
-    Uses daily cache for intervals >= 1d. Intraday data (5m, 1h) is always
-    fetched live.
+    Uses daily cache for intervals >= 1d. Intraday data (5m, 1h) is always live.
+    Currency conversion is the caller's responsibility.
     """
     yf_period, yf_interval = PERIOD_MAP.get(period_key, ("1mo", "1d"))
 

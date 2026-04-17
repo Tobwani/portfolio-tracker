@@ -8,7 +8,8 @@ Ein selbst gehosteter, open-source Portfolio Tracker für Aktien, ETFs und Krypt
 
 ### Dashboard (Streamlit)
 - **Live-Kurse** via Yahoo Finance, automatisch aktualisierbar (1 / 5 / 15 / 30 Min)
-- **Gesamtübersicht**: Gesamtwert (inkl. optionalem Barvermögen), Gesamt-G/V, Tagesänderung (positionsbezogen)
+- **Währungsunterstützung**: Basiswährung EUR oder USD wählbar — US-Aktien (AAPL, MSFT usw.) werden automatisch per Live-Wechselkurs umgerechnet
+- **Gesamtübersicht**: Gesamtwert (inkl. optionalem Barvermögen), Gesamt-G/V, Tagesänderung (positionsbezogen: Kursänderung × Stück)
 - **Portfolio-Entwicklung**: Interaktiver Chart mit Zeitraum-Auswahl (1T / 1W / 1M / 3M / 1J / MAX), startet korrekt ab dem jeweiligen Kaufdatum
 - **Allocation Pie**: Aufteilung des Portfolios inkl. Barvermögen
 - **Positionskarten**: Schnellübersicht je Position mit G/V, Tagesänderung und Link zur Detailansicht
@@ -20,14 +21,15 @@ Ein selbst gehosteter, open-source Portfolio Tracker für Aktien, ETFs und Krypt
 - **Investiert vs. Wert**: Gruppenbalken-Chart je Position
 - **Positionstabelle**: Farbcodiert (grün/rot), beste und schwächste Position hervorgehoben
 - **CSV-Upload**: Eigenes Portfolio als Datei hochladen
-- **Tooltips** auf allen Kennzahlen (Hover-Erklärung)
+- **Tooltips** auf allen Kennzahlen
 - **SQLite-Cache** (`data/cache.db`): vermeidet unnötige API-Aufrufe
+- **Ticker-Hilfe** in der Sidebar mit den häufigsten Trade Republic Instrumenten
 
 ### CLI (v1, weiterhin verfügbar)
-- Terminal-Ausgabe mit G/V je Position und Portfolio-Gesamtübersicht
+- Terminal-Ausgabe mit G/V je Position und Portfolio-Gesamtübersicht (in EUR)
 
 ### Geplant
-- **v3** – Telegram Alert Bot: Konfigurierbare Benachrichtigungen bei Kurszielen oder prozentualen Schwellen, steuerbar per Chat-Commands
+- **v3** – Telegram Alert Bot: Konfigurierbare Benachrichtigungen bei Kurszielen oder prozentualen Schwellen
 
 ---
 
@@ -51,19 +53,11 @@ pip install -r requirements.txt
 streamlit run src/app.py
 ```
 
-Der Browser öffnet sich automatisch. Das Dashboard lädt `data/example_portfolio.csv` — über die Sidebar kann ein eigenes CSV hochgeladen werden.
+Der Browser öffnet sich automatisch. Das Dashboard lädt `data/example_portfolio.csv` — über die Sidebar kann ein eigenes CSV hochgeladen werden oder die Datei direkt bearbeitet werden.
 
 ### CLI
 
 ```bash
-python src/tracker.py
-```
-
-Liest standardmäßig `data/example_portfolio.csv`. Für ein eigenes Portfolio:
-
-```bash
-cp data/example_portfolio.csv data/my_portfolio.csv
-# Dann in src/tracker.py: portfolio_path = DATA_DIR / "my_portfolio.csv"
 python src/tracker.py
 ```
 
@@ -73,21 +67,56 @@ python src/tracker.py
 
 ```csv
 ticker,purchase_date,purchase_price,quantity
-AAPL,2024-01-15,185.50,5
-MSFT,2024-03-01,415.00,3
-BTC-USD,2024-06-01,67000,0.05
-ETH-USD,2024-08-01,2800,0.5
-IWDA.AS,2024-02-01,95.00,10
+AAPL,2024-01-15,152.30,5
+SAP.DE,2024-03-01,172.50,3
+BTC-EUR,2024-06-01,61500,0.05
+NVDA,2024-09-01,102.50,4
+EUNL.DE,2023-11-01,68.20,15
 ```
 
-| Spalte           | Beschreibung                                                    |
-|------------------|-----------------------------------------------------------------|
-| `ticker`         | Yahoo Finance Ticker (z. B. `AAPL`, `BTC-USD`, `IWDA.AS`)      |
-| `purchase_date`  | Kaufdatum (YYYY-MM-DD) – für Chart-Startpunkt und Laufzeit      |
-| `purchase_price` | Kaufkurs in der Handelswährung der Aktie                        |
-| `quantity`       | Anzahl der Anteile / Coins                                      |
+| Spalte           | Beschreibung |
+|------------------|--------------|
+| `ticker`         | Yahoo Finance Ticker (siehe Tabelle unten) |
+| `purchase_date`  | Kaufdatum (YYYY-MM-DD) – optional, aber empfohlen für Chart-Startpunkt und Renditeberechnung |
+| `purchase_price` | Kaufkurs in deiner **Basiswährung** (Standard: EUR) — bei US-Aktien also den EUR-Betrag eintragen, den Trade Republic dir berechnet hat |
+| `quantity`       | Anzahl der Anteile / Coins / Bruchteile |
 
-> **Tipp:** `purchase_date` ist optional – ohne Datum wird kein Kaufpunkt-Marker im Chart angezeigt und die Laufzeit-Kennzahlen entfallen.
+> **Wichtig:** `purchase_price` immer in der gewählten Basiswährung (Standard: EUR) eintragen. Das ist der Betrag, den Trade Republic dir für den Kauf berechnet hat — nicht der USD-Rohpreis.
+
+---
+
+## Ticker-Formate (Yahoo Finance)
+
+**Faustregel:**
+- Kein Suffix → US-Börse, Preis in USD → wird automatisch in EUR umgerechnet
+- `.DE` Suffix → XETRA Frankfurt, Preis direkt in EUR
+- `.AS` Suffix → Amsterdam (Euronext), Preis direkt in EUR
+- Krypto: `-EUR` statt `-USD` verwenden (z.B. `BTC-EUR`)
+
+| Instrument | Yahoo Finance Ticker | Börse | Währung |
+|---|---|---|---|
+| Apple | `AAPL` | NASDAQ | USD → auto EUR |
+| Microsoft | `MSFT` | NASDAQ | USD → auto EUR |
+| NVIDIA | `NVDA` | NASDAQ | USD → auto EUR |
+| Alphabet (Google) | `GOOG` | NASDAQ | USD → auto EUR |
+| Amazon | `AMZN` | NASDAQ | USD → auto EUR |
+| Tesla | `TSLA` | NASDAQ | USD → auto EUR |
+| Meta | `META` | NASDAQ | USD → auto EUR |
+| SAP | `SAP.DE` | XETRA | EUR direkt |
+| Siemens | `SIE.DE` | XETRA | EUR direkt |
+| BMW | `BMW.DE` | XETRA | EUR direkt |
+| Allianz | `ALV.DE` | XETRA | EUR direkt |
+| Deutsche Telekom | `DTE.DE` | XETRA | EUR direkt |
+| ASML | `ASML.AS` | Amsterdam | EUR direkt |
+| MSCI World ETF (iShares) | `EUNL.DE` | XETRA | EUR direkt |
+| MSCI World ETF (iShares) alternativ | `IWDA.AS` | Amsterdam | EUR direkt |
+| NASDAQ-100 ETF (iShares) | `CNDX.AS` | Amsterdam | EUR direkt |
+| S&P 500 ETF (iShares) | `CSPX.AS` | Amsterdam | USD → auto EUR |
+| Bitcoin | `BTC-EUR` | – | EUR direkt |
+| Ethereum | `ETH-EUR` | – | EUR direkt |
+| Solana | `SOL-EUR` | – | EUR direkt |
+
+> **Tipp:** Yahoo Finance Ticker findest du auf [finance.yahoo.com](https://finance.yahoo.com) — einfach den Namen der Aktie suchen und den Ticker aus der URL ablesen.
 
 ---
 
@@ -97,7 +126,7 @@ IWDA.AS,2024-02-01,95.00,10
 portfolio-tracker/
 ├── src/
 │   ├── tracker.py          # CLI Portfolio Tracker (v1)
-│   ├── data_fetcher.py     # Shared: yfinance Wrapper + SQLite Cache
+│   ├── data_fetcher.py     # Shared: yfinance Wrapper + SQLite Cache + Währungskonvertierung
 │   └── app.py              # Streamlit Dashboard (v2)
 ├── data/
 │   ├── example_portfolio.csv
@@ -113,13 +142,13 @@ portfolio-tracker/
 
 ## Abhängigkeiten
 
-| Paket                  | Zweck                                  |
-|------------------------|----------------------------------------|
-| `yfinance`             | Kursdaten von Yahoo Finance            |
-| `pandas`               | Datenverarbeitung                      |
-| `streamlit`            | Web-Dashboard                          |
-| `plotly`               | Interaktive Charts                     |
-| `streamlit-autorefresh`| Auto-Refresh im Dashboard              |
+| Paket | Zweck |
+|---|---|
+| `yfinance` | Kursdaten und Wechselkurse von Yahoo Finance |
+| `pandas` | Datenverarbeitung |
+| `streamlit` | Web-Dashboard |
+| `plotly` | Interaktive Charts |
+| `streamlit-autorefresh` | Auto-Refresh im Dashboard |
 
 ---
 

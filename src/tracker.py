@@ -1,45 +1,29 @@
-import sys
 from pathlib import Path
 
 import pandas as pd
-import yfinance as yf
+
+from data_fetcher import get_current_price, get_exchange_rate, load_portfolio
 
 DATA_DIR = Path(__file__).parent.parent / "data"
+BASE_CURRENCY = "EUR"
+CCY_SYM = "€"
 
 
 def round_float(number: float) -> float:
     return round(float(number), 2)
 
 
-def load_portfolio(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    required = {"ticker", "purchase_price", "quantity"}
-    if not required.issubset(df.columns):
-        missing = required - set(df.columns)
-        print(f"Fehler: Fehlende Spalten in CSV: {missing}")
-        sys.exit(1)
-    return df
-
-
-def get_current_price(ticker: str) -> float | None:
-    try:
-        info = yf.Ticker(ticker).fast_info
-        price = info["last_price"]
-        if price is None:
-            raise ValueError("Kein Preis verfügbar")
-        return round_float(price)
-    except Exception as e:
-        print(f"Warnung: Preis für '{ticker}' konnte nicht abgerufen werden ({e})")
-        return None
-
-
 def calculate_performance(df: pd.DataFrame) -> dict:
     performance = {}
 
     for idx, ticker in enumerate(df["ticker"]):
-        current_price = get_current_price(ticker)
-        if current_price is None:
+        price_raw, ticker_ccy = get_current_price(ticker)
+        if price_raw is None:
+            print(f"Warnung: Preis für '{ticker}' konnte nicht abgerufen werden.")
             continue
+
+        rate = get_exchange_rate(ticker_ccy or "USD", BASE_CURRENCY)
+        current_price = round_float(price_raw * rate)
 
         purchase_price = round_float(df["purchase_price"].iloc[idx])
         quantity = df["quantity"].iloc[idx]
@@ -63,9 +47,9 @@ def calculate_performance(df: pd.DataFrame) -> dict:
 
 
 def show_results(performance: dict) -> None:
-    print("=" * 40)
-    print("  Portfolio Übersicht")
-    print("=" * 40)
+    print("=" * 44)
+    print(f"  Portfolio Übersicht  ({BASE_CURRENCY})")
+    print("=" * 44)
 
     total_value = 0.0
     total_pl = 0.0
@@ -73,19 +57,19 @@ def show_results(performance: dict) -> None:
     for ticker, info in performance.items():
         sign = "+" if info["profit_loss"] >= 0 else ""
         print(f"\n{ticker}")
-        print(f"  Aktueller Kurs:  ${info['current_price']}")
-        print(f"  Kaufkurs:        ${info['purchase_price']}")
+        print(f"  Aktueller Kurs:  {info['current_price']:,.2f} {CCY_SYM}")
+        print(f"  Kaufkurs:        {info['purchase_price']:,.2f} {CCY_SYM}")
         print(f"  Stück:           {info['quantity']}")
-        print(f"  Positionswert:   ${info['current_value']}")
-        print(f"  Gewinn/Verlust:  {sign}{info['profit_loss']}$ ({sign}{info['profit_loss_percent']}%)")
+        print(f"  Positionswert:   {info['current_value']:,.2f} {CCY_SYM}")
+        print(f"  Gewinn/Verlust:  {sign}{info['profit_loss']:,.2f} {CCY_SYM} ({sign}{info['profit_loss_percent']:.2f}%)")
         total_value += info["current_value"]
         total_pl += info["profit_loss"]
 
-    print("\n" + "=" * 40)
+    print("\n" + "=" * 44)
     sign = "+" if total_pl >= 0 else ""
-    print(f"  Gesamtwert:      ${round_float(total_value)}")
-    print(f"  Gesamt G/V:      {sign}{round_float(total_pl)}$")
-    print("=" * 40)
+    print(f"  Gesamtwert:      {round_float(total_value):,.2f} {CCY_SYM}")
+    print(f"  Gesamt G/V:      {sign}{round_float(total_pl):,.2f} {CCY_SYM}")
+    print("=" * 44)
 
 
 if __name__ == "__main__":
